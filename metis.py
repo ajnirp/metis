@@ -1,3 +1,4 @@
+from PIL import Image
 import discord
 import os
 import sqlite3 as sq
@@ -22,6 +23,8 @@ class Metis(discord.Client):
 
         # await self.assign_role(message)
         # await self.command(message)
+        await self.display_color(message)
+        await self.post_command(message)
 
         ## Moderators only
 
@@ -44,8 +47,8 @@ class Metis(discord.Client):
         # await self.ignore_for_logging(message)
         # await self.ignore_for_gallery(message)
 
-        # await self.add_command(message)
-        # await self.remove_command(message)
+        await self.add_command(message)
+        await self.remove_command(message)
         # await self.edit_command(message)
         # await self.rename_command(message)
 
@@ -199,6 +202,151 @@ class Metis(discord.Client):
             idx += 1
         report = ''.join(chunks[start:idx])
         await self.send_message(dest, report)
+
+    async def display_color(self, message):
+        '''Display a color patch'''
+        async def show_usage(message):
+            report = 'Usage: `.color <RGB hex code>` e.g.\n`.color #abc123`\n`.color 142 79 105`'
+            await self.send_message(message.channel, report)
+
+        def hex_code_to_rgb(h):
+            return tuple(int(channel, 16) for channel in [h[:2], h[2:4], h[4:]])
+
+        def rgb_to_hex_code(r, g, b):
+            def two_digit_hex(n):
+                return hex(int(n))[2:].rjust(2, '0')
+            return ''.join(map(two_digit_hex, [r, g, b]))
+
+        async def send_color_patch_pic(color):
+            data = [color for i in range(64 * 64)]
+            img = Image.new('RGB', (64, 64))
+            img.putdata(data)
+            filename = form_filename(color)
+            img.save(filename)
+            await self.send_file(message.channel, filename)
+            os.remove(filename)
+
+        def form_filename(color):
+            hex_code = rgb_to_hex_code(*color)
+            filename = '{}.png'.format(hex_code)
+            return filename
+
+        if message.content[0] not in '.!': return
+
+        prefixes = ['color', 'colour']
+        if not any(message.content[1:1+len(prefix)] == prefix for prefix in prefixes):
+            return
+
+        split = message.content.split()
+
+        if len(split) == 2:
+            color = split[1]
+            if color.startswith('#'): color = color[1:]
+            elif color.startswith('0x'): color = color[2:]
+            color = hex_code_to_rgb(color)
+            await send_color_patch_pic(color)
+
+        elif len(split) == 4:
+            color = tuple(int(s) for s in split[1:])
+            await send_color_patch_pic(color)
+
+        else:
+            await show_usage(message)
+            return
+
+    async def add_command(self, message):
+        '''Create a new command-response pair'''
+        if message.content[0] != '.': return
+        if message.author.id != BOT_OWNER_ID: return # TODO: make this a moderator check
+
+        prefix = 'add'
+        content = message.content.strip()
+        if content[1:1+len(prefix)] != prefix: return
+
+        split = content.split('|')
+        if len(split) != 2: return
+
+        command = split[0].split()[1].strip()
+
+        db_name = 'db/{}.db'.format(message.server.id)
+        conn = sq.connect(db_name)
+        c = conn.cursor()
+
+        c.execute('SELECT response from commands WHERE command=?', (command,))
+        result = c.fetchone()
+
+        if result is not None:
+            response = result[0]
+            report = ':no_entry_sign: Command **{}** already exists (response: <{}>)'.format(command, response)
+            await self.send_message(message.channel, report)
+            return
+
+        response = split[1].strip()
+        c.execute('INSERT INTO commands VALUES (?, ?)', (command, response))
+        conn.commit()
+        conn.close()
+
+        report = ':white_check_mark: Created command **{}** (response: <{}>)'.format(command, response)
+        await self.send_message(message.channel, report)
+
+    async def post_command(self, message):
+        '''Post a response to a command'''
+        # The message should be of the form '.command'
+        if message.content[0] != '.': return
+
+        split = message.content.strip().split()
+        if len(split) != 1: return
+
+        command = message.content.strip()[1:]
+
+        db_name = 'db/{}.db'.format(message.server.id)
+        conn = sq.connect(db_name)
+        c = conn.cursor()
+
+        c.execute('SELECT response from commands WHERE command=?', (command,))
+        result = c.fetchone()
+
+        if result is None: return
+
+        report = result[0]
+        await self.send_message(message.channel, report)
+
+        conn.close()
+
+    async def remove_command(self, message):
+        '''Remove an existing command'''
+        if message.content[0] != '.': return
+
+        prefix = 'remove'
+        content = message.content.strip()
+        if content[1:1+len(prefix)] != prefix: return
+
+        split = content.split()
+        if len(split) != 2: return
+
+        command = split[1].strip()
+
+        db_name = 'db/{}.db'.format(message.server.id)
+        conn = sq.connect(db_name)
+        c = conn.cursor()
+
+        c.execute('SELECT response from commands WHERE command=?', (command,))
+        result = c.fetchone()
+
+        if result is None:
+            report = ':confused: The command **{}** does not exist. Would you like to add it?'.format(command)
+            await self.send_message(message.channel, report)
+            return
+
+        response = result[0]
+
+        c.execute('DELETE FROM commands WHERE command=?', (command,))
+        conn.commit()
+        conn.close()
+
+        report = ':white_check_mark: Deleted command **{}** (response was: <{}>)'.format(command, response)
+        await self.send_message(message.channel, report)
+
 
 metis = Metis()
 metis.run(os.environ['M_BOT_TOKEN'])
