@@ -8,16 +8,27 @@ BOT_OWNER_ID = '150919851710480384'
 class Metis(discord.Client):
     def __init__(self):
         super().__init__()
-        self.ignored_users = {}
+        self.ignored_users = set()
+        self.emojis = {}
         self.db_conns = {}
 
     async def on_ready(self):
         print('Logged in:', self.user.name)
+        self.refresh_emojis()
+
+    def refresh_emojis(self):
+        '''Initalize all emojis'''
+        self.emojis = {}
+        for emoji in self.get_all_emojis():
+            emoji_str = '<:{}:{}>'.format(emoji.name, emoji.id)
+            self.emojis[emoji.name] = emoji_str
 
     async def on_message(self, message):
         if message.author.id == self.user.id: return
         if len(message.content) == 0: return
-        if message.content[0] != '.': return
+        if message.content[0] not in '.-': return
+
+        if message.author.id in self.ignored_users: return
 
         ## All server members
 
@@ -59,9 +70,17 @@ class Metis(discord.Client):
 
         await self.add_moderator_role(message)
         await self.remove_moderator_role(message)
-        await self.show_moderator_roles(message)
-        await self.show_all_roles(message)
+        await self.list_moderator_roles(message)
+        await self.list_all_roles(message)
+
         await self.setup_server_db(message)
+
+        await self.ignore_user(message)
+        await self.unignore_user(message)
+        await self.list_ignored_users(message)
+
+        await self.refresh_emojis_request(message)
+        # await self.ignore_channel(message)
 
         # These are all self-assignable roles only
         # await self.add_role_alternate_name(message)
@@ -71,11 +90,11 @@ class Metis(discord.Client):
 
     async def setup_server_db(self, message):
         if message.author.id != BOT_OWNER_ID: return
-        if message.content != '.ssdb': return
+        if message.content != '-ssdb': return
 
         db_name = 'db/{}.db'.format(message.server.id)
         if os.path.exists(db_name):
-            report = ':bangbang: Server database already exists'
+            report = '{} Server database already exists'.format(self.emojis['blobstop'])
             await self.send_message(message.channel, report)
             return
         conn = sq.connect(db_name)
@@ -91,15 +110,17 @@ class Metis(discord.Client):
         c.execute('CREATE TABLE multi_commands (command text, responses text);')
         c.execute('CREATE TABLE role_alternate_names (canonical_name text, alternate_name text);')
         c.execute('CREATE TABLE role_ids (canonical_name text, id text);')
+        c.execute('CREATE TABLE ignored_users (id text);')
 
         conn.commit()
         conn.close()
-        report = ':white_check_mark: Done setting up database'
+        report = '{} Done setting up database'.format(self.emojis['blobgo'])
         await self.send_message(message.channel, report)
 
     async def add_moderator_role(self, message):
-        '''Show all the moderator roles on the server'''
+        '''Add a role to the moderator group'''
         if message.author.id != BOT_OWNER_ID: return
+        if message.content[0] != '-': return
 
         prefix = 'amr'
         if message.content[1:1+len(prefix)] != prefix: return
@@ -125,7 +146,9 @@ class Metis(discord.Client):
         await self.send_message(message.channel, report)
 
     async def remove_moderator_role(self, message):
+        '''Remove a role from the moderator group'''
         if message.author.id != BOT_OWNER_ID: return
+        if message.content[0] != '-': return
 
         prefix = 'rmr'
         if message.content[1:1+len(prefix)] != prefix: return
@@ -150,9 +173,10 @@ class Metis(discord.Client):
         report = ':white_check_mark: Deleted moderator role: {} / {}'.format(role.name, role.id)
         await self.send_message(message.channel, report)
 
-    async def show_moderator_roles(self, message):
+    async def list_moderator_roles(self, message):
+        '''Show all the moderator roles on the server'''
         if message.author.id != BOT_OWNER_ID: return # TODO: this should be moderator check
-        if message.content != '.smr': return
+        if message.content != '-lmr': return
 
         conn = sq.connect('db/{}.db'.format(message.server.id))
         c = conn.cursor()
@@ -167,17 +191,17 @@ class Metis(discord.Client):
 
         await self.show_roles_helper(role_list, message.channel)
 
-    async def show_all_roles(self, message):
+    async def list_all_roles(self, message):
         '''Show all roles in the server'''
         # TODO: make this mod-only, not owner-only
         if message.author.id != BOT_OWNER_ID: return
-        if message.content.strip() != '.roles': return
+        if message.content != '-lar': return
 
         role_list = sorted(message.server.roles, key=lambda r: r.position, reverse=True)
         await self.show_roles_helper(role_list, message.channel)
 
     async def show_roles_helper(self, role_list, dest):
-        '''A helper function for show_moderator_roles and show_all_roles'''
+        '''A helper function for list_moderator_roles and list_all_roles'''
         MESSAGE_LIMIT = 2000
         chunks = []
 
@@ -256,7 +280,7 @@ class Metis(discord.Client):
 
     async def add_command(self, message):
         '''Create a new command-response pair'''
-        if message.content[0] != '.': return
+        if message.content[0] != '-': return
         if message.author.id != BOT_OWNER_ID: return # TODO: make this a moderator check
 
         prefix = 'add'
@@ -315,7 +339,8 @@ class Metis(discord.Client):
 
     async def remove_command(self, message):
         '''Remove an existing command'''
-        if message.content[0] != '.': return
+        if message.author.id != BOT_OWNER_ID: return
+        if message.content[0] != '-': return
 
         prefix = 'remove'
         content = message.content.strip()
@@ -347,6 +372,122 @@ class Metis(discord.Client):
         report = ':white_check_mark: Deleted command **{}** (response was: <{}>)'.format(command, response)
         await self.send_message(message.channel, report)
 
+    async def ignore_user(self, message):
+        '''Sart ignoring all commands from a user'''
+        if message.author.id != BOT_OWNER_ID: return
+        if message.content[0] != '-': return
+
+        prefix = 'iu'
+        if message.content[1:1+len(prefix)] != prefix: return
+
+        if len(message.mentions) < 1: return
+
+        db_name = 'db/{}.db'.format(message.server.id)
+        conn = sq.connect(db_name)
+        c = conn.cursor()
+
+        for target in message.mentions:
+            if target.id == BOT_OWNER_ID: continue
+            c.execute('SELECT * from ignored_users WHERE id=?', (target.id,))
+            result = c.fetchone()
+            if result is None:
+                c.execute('INSERT INTO ignored_users VALUES (?)', (target.id,))
+                report = '{} Now ignoring user: **{}** / {}'.format(self.emojis['angerycry'], target.display_name, target.id)
+                await self.send_message(message.channel, report)
+            else:
+                report = '{} Already ignoring this user: **{}** / {}'.format(self.emojis['blobstop'], target.display_name, target.id)
+                await self.send_message(message.channel, report)
+
+        # Update local list
+        for row in c.execute('SELECT * from ignored_users'):
+            self.ignored_users.add(row[0])
+
+        conn.commit()
+        conn.close()
+
+    async def unignore_user(self, message):
+        '''Stop ignoring all messages from a user'''
+        if message.author.id != BOT_OWNER_ID: return
+        if message.content[0] != '-': return
+
+        prefix = 'uiu'
+        if message.content[1:1+len(prefix)] != prefix: return
+
+        if len(message.mentions) < 1: return
+
+        db_name = 'db/{}.db'.format(message.server.id)
+        conn = sq.connect(db_name)
+        c = conn.cursor()
+
+        for target in message.mentions:
+            c.execute('SELECT * from ignored_users WHERE id=?', (target.id,))
+            result = c.fetchone()
+            if result is None:
+                report = '{} This user was not in the ignored list: **{}** / {}'.format(self.emojis['blobwaitwhat'], target.display_name, target.id)
+                await self.send_message(message.channel, report)
+            else:
+                c.execute('DELETE FROM ignored_users WHERE id=?', (target.id,))
+                report = ':white_check_mark: No longer ignoring user: **{}** / {}'.format(target.display_name, target.id)
+                await self.send_message(message.channel, report)
+
+        # Update local list
+        self.ignored_users = set()
+        for row in c.execute('SELECT * from ignored_users'):
+            self.ignored_users.add(row[0])
+
+        conn.commit()
+        conn.close()
+
+    async def list_ignored_users(self, message):
+        '''List all users that the bot is ignoring'''
+        if message.author.id != BOT_OWNER_ID: return
+        if message.content != '-liu': return
+
+        db_name = 'db/{}.db'.format(message.server.id)
+        conn = sq.connect(db_name)
+        c = conn.cursor()
+
+        # Update local copy of the ignored_users table
+        for row in c.execute('SELECT * from ignored_users'):
+            self.ignored_users.add(row[0])
+
+        conn.close()
+
+        MESSAGE_LIMIT = 2000
+        chunks = []
+
+        for user_id in self.ignored_users:
+            member = discord.utils.find(lambda m: m.id == user_id, message.server.members)
+            message_chunk = '{}#{} / {}\n'.format(member.name, str(member.discriminator), member.id)
+            chunks.append(message_chunk)
+
+        if len(chunks) == 0:
+            report = '{} Not ignoring any users'.format(self.emojis['blobblush'])
+            await self.send_message(message.channel, report)
+            return
+        else:
+            report = '{} Ignoring the following users:'.format(self.emojis['blobunamused'])
+            await self.send_message(message.channel, report)
+
+        cumulative_len, start, idx = 0, 0, 0
+        for chunk in chunks:
+            cumulative_len += len(chunk)
+            if cumulative_len > MESSAGE_LIMIT:
+                report = ''.join(chunks[start:idx])
+                await self.send_message(dest, report)
+                start = idx
+                cumulative_len = 0
+            idx += 1
+        report = ''.join(chunks[start:idx])
+        await self.send_message(message.channel, report)
+
+    async def refresh_emojis_request(self, message):
+        '''Refresh all the emojis the bot can see'''
+        if message.author.id != BOT_OWNER_ID: return
+        if message.content != '-re': return
+        self.refresh_emojis()
+        report = '{} Refreshed emojis'.format(self.emojis['blobokhand'])
+        await self.send_message(message.channel, report)
 
 metis = Metis()
 metis.run(os.environ['M_BOT_TOKEN'])
