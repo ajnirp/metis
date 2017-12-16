@@ -1,7 +1,9 @@
 from PIL import Image
 import discord
 import os
+import random
 import sqlite3 as sq
+import util
 
 BOT_OWNER_ID = '150919851710480384'
 
@@ -34,8 +36,11 @@ class Metis(discord.Client):
 
         # await self.assign_role(message)
         # await self.command(message)
-        await self.display_color(message)
+        await self.color_patch(message)
         await self.post_command(message)
+        await self.choose(message)
+        await self.server_info(message)
+        await self.user_info(message)
 
         ## Moderators only
 
@@ -125,6 +130,11 @@ class Metis(discord.Client):
         prefix = 'amr'
         if message.content[1:1+len(prefix)] != prefix: return
 
+        if not util.check_db_exists(message):
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            await self.send_message(message.channel, report)
+            return
+
         split = message.content.strip().split()
         if len(split) != 2: return
 
@@ -153,6 +163,11 @@ class Metis(discord.Client):
         prefix = 'rmr'
         if message.content[1:1+len(prefix)] != prefix: return
 
+        if not util.check_db_exists(message):
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            await self.send_message(message.channel, report)
+            return
+
         split = message.content.strip().split()
         if len(split) != 2: return
 
@@ -177,6 +192,11 @@ class Metis(discord.Client):
         '''Show all the moderator roles on the server'''
         if message.author.id != BOT_OWNER_ID: return # TODO: this should be moderator check
         if message.content != '-lmr': return
+
+        if not util.check_db_exists(message):
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            await self.send_message(message.channel, report)
+            return
 
         conn = sq.connect('db/{}.db'.format(message.server.id))
         c = conn.cursor()
@@ -227,7 +247,7 @@ class Metis(discord.Client):
         report = ''.join(chunks[start:idx])
         await self.send_message(dest, report)
 
-    async def display_color(self, message):
+    async def color_patch(self, message):
         '''Display a color patch'''
         async def show_usage(message):
             report = 'Usage: `.color <RGB hex code>` e.g.\n`.color #abc123`\n`.color 142 79 105`'
@@ -255,7 +275,7 @@ class Metis(discord.Client):
             filename = '{}.png'.format(hex_code)
             return filename
 
-        if message.content[0] not in '.!': return
+        if message.content[0] != '.': return
 
         prefixes = ['color', 'colour']
         if not any(message.content[1:1+len(prefix)] == prefix for prefix in prefixes):
@@ -286,6 +306,11 @@ class Metis(discord.Client):
         prefix = 'add'
         content = message.content.strip()
         if content[1:1+len(prefix)] != prefix: return
+
+        if not util.check_db_exists(message):
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            await self.send_message(message.channel, report)
+            return
 
         split = content.split('|')
         if len(split) != 2: return
@@ -318,6 +343,10 @@ class Metis(discord.Client):
         # The message should be of the form '.command'
         if message.content[0] != '.': return
 
+        # Note: in this case, we do not display an error message if the server DB does not exist
+        if not util.check_db_exists(message):
+            return
+
         split = message.content.strip().split()
         if len(split) != 1: return
 
@@ -345,6 +374,11 @@ class Metis(discord.Client):
         prefix = 'remove'
         content = message.content.strip()
         if content[1:1+len(prefix)] != prefix: return
+
+        if not util.check_db_exists(message):
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            await self.send_message(message.channel, report)
+            return
 
         split = content.split()
         if len(split) != 2: return
@@ -380,6 +414,11 @@ class Metis(discord.Client):
         prefix = 'iu'
         if message.content[1:1+len(prefix)] != prefix: return
 
+        if not util.check_db_exists(message):
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            await self.send_message(message.channel, report)
+            return
+
         if len(message.mentions) < 1: return
 
         db_name = 'db/{}.db'.format(message.server.id)
@@ -413,6 +452,11 @@ class Metis(discord.Client):
         prefix = 'uiu'
         if message.content[1:1+len(prefix)] != prefix: return
 
+        if not util.check_db_exists(message):
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            await self.send_message(message.channel, report)
+            return
+
         if len(message.mentions) < 1: return
 
         db_name = 'db/{}.db'.format(message.server.id)
@@ -442,6 +486,11 @@ class Metis(discord.Client):
         '''List all users that the bot is ignoring'''
         if message.author.id != BOT_OWNER_ID: return
         if message.content != '-liu': return
+
+        if not util.check_db_exists(message):
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            await self.send_message(message.channel, report)
+            return
 
         db_name = 'db/{}.db'.format(message.server.id)
         conn = sq.connect(db_name)
@@ -488,6 +537,91 @@ class Metis(discord.Client):
         self.refresh_emojis()
         report = '{} Refreshed emojis'.format(self.emojis['blobokhand'])
         await self.send_message(message.channel, report)
+
+    async def choose(self, message):
+        '''The Dice Man, but for Discord'''
+        async def show_usage(message):
+            report = 'Usage: `.choose <choice1> | <choice2> | <choice3> | ...`' + \
+                     '\ne.g. `.choose go to sleep | post on discord`'
+            await self.send_message(message.channel, report)
+
+        if message.content[0] not in '.!': return
+
+        prefix = 'choose'
+        if message.content[1:1+len(prefix)] != prefix: return
+
+        split = message.content.split()
+        if len(split) < 2:
+            await show_usage(message)
+            return
+
+        choices = message.content.strip()[2+len(prefix):].strip()
+        choices = choices.split('|')
+        chosen = random.choice(choices)
+        report = '{0.mention} I choose: **{1}**!'.format(message.author, chosen.strip())
+        await self.send_message(message.channel, report)
+
+    async def server_info(self, message):
+        '''Display the server info'''
+        if message.content != '.s': return
+
+        embed = discord.Embed(
+            title='Server info',
+            type='rich',
+            description=message.server.name,
+            url=discord.Embed.Empty,
+            footer=discord.Embed.Empty,
+            colour=discord.Color(0xeaa82e))
+
+        roles = ' / '.join(r.name for r in message.server.role_hierarchy)
+
+        embed.set_thumbnail(url=message.server.icon_url) \
+             .add_field(name='Server created', value=util.ts(message.server.created_at)) \
+             .add_field(name='Members', value=message.server.member_count) \
+             .add_field(name='ID', value=message.server.id) \
+             .add_field(name='Owner', value=message.server.owner.name) \
+             .add_field(name='Roles', value=roles)
+
+        await self.send_message(message.channel, content=None, tts=False, embed=embed)
+
+    async def user_info(self, message):
+        '''Handle the .u message'''
+        if message.content[:2] != '.u': return
+
+        if len(message.mentions) == 0:
+            await self.display_user_info(message.author, message.channel)
+            return
+
+        for member in message.mentions:
+            await self.display_user_info(member, message.channel)
+
+    async def display_user_info(self, member, channel):
+        '''Send a message to channel 'channel' containing an Embed object
+        that has information about the server member 'member'.'''
+        account_created = discord.utils.snowflake_time(member.id)
+
+        role_names = 'None'
+        if len(member.roles) > 1:
+            role_names = ' / '.join(r.name for r in sorted(member.roles[1:], key=lambda r: r.position, reverse=True))
+
+        embed = discord.Embed(
+            title='User info',
+            type='rich',
+            description=member.name,
+            url=discord.Embed.Empty,
+            timestamp=discord.Embed.Empty,
+            footer=discord.Embed.Empty,
+            colour=member.top_role.colour)
+
+        embed.set_thumbnail(url=member.avatar_url) \
+             .add_field(name='Account made', value=util.ts(account_created)) \
+             .add_field(name='Here since', value=util.ts(member.joined_at)) \
+             .add_field(name='ID', value=member.id) \
+             .add_field(name='Nickname', value=member.nick) \
+             .add_field(name='Status', value=str(member.status).title()) \
+             .add_field(name='Roles', value=role_names)
+
+        await self.send_message(channel, content=None, tts=False, embed=embed)
 
 metis = Metis()
 metis.run(os.environ['M_BOT_TOKEN'])
