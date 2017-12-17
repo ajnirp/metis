@@ -41,6 +41,7 @@ class Metis(discord.Client):
         await self.choose(message)
         await self.server_info(message)
         await self.user_info(message)
+        await self.display_avatar(message)
 
         ## Moderators only
 
@@ -622,6 +623,18 @@ class Metis(discord.Client):
              .add_field(name='Roles', value=role_names)
 
         await self.send_message(channel, content=None, tts=False, embed=embed)
+
+    async def display_avatar(self, message):
+        '''Post the avatar of a user'''
+        if message.content[:2] != '.a': return
+        targets = [message.author]
+        if len(message.mentions) > 0:
+            targets = message.mentions
+        for member in targets:
+            report = '{} User has no avatar'.format(self.emojis['sayWhat'])
+            if member.avatar_url != '':
+                report = '{}\'s avatar: {}'.format(member.name, member.avatar_url)
+            await self.send_message(message.channel, report)
 
 metis = Metis()
 metis.run(os.environ['M_BOT_TOKEN'])
