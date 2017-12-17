@@ -3,6 +3,7 @@ import discord
 import os
 import random
 import sqlite3 as sq
+import sys
 import util
 
 BOT_OWNER_ID = '150919851710480384'
@@ -66,6 +67,7 @@ class Metis(discord.Client):
 
         await self.add_command(message)
         await self.remove_command(message)
+        await self.delete_messages_(message)
         # await self.edit_command(message)
         # await self.rename_command(message)
 
@@ -93,6 +95,20 @@ class Metis(discord.Client):
         # await self.remove_role_alternate_name(message)
         # await self.add_role(message)
         # await self.remove_role(message)
+
+    async def delete_messages_(self, message):
+        '''Delete the last n number of messages. The final underscore in the name
+        is because we want to avoid overwriting the delete_message() method in discord.Client'''
+        if message.author.id != BOT_OWNER_ID: return # TODO: mods also
+        if not message.content.startswith('-d'): return
+        num_messages = message.content[2:]
+        try:
+            num_messages = 1 + int(num_messages)
+            await self.purge_from(message.channel, limit=num_messages)
+            # await self.send_message(message.channel, 'deleted {} messages'.format(num_messages))
+        except AttributeError as e:
+            print('delete_messages: {}'.format(e), file=sys.stderr)
+            return
 
     async def setup_server_db(self, message):
         if message.author.id != BOT_OWNER_ID: return
@@ -626,7 +642,7 @@ class Metis(discord.Client):
 
     async def display_avatar(self, message):
         '''Post the avatar of a user'''
-        if message.content[:2] != '.a': return
+        if message.content != '.a' or message.content[:3] != '.a ': return
         targets = [message.author]
         if len(message.mentions) > 0:
             targets = message.mentions
