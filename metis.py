@@ -14,6 +14,14 @@ class Metis(discord.Client):
         self.ignored_users = set()
         self.emojis = {}
         self.db_conns = {}
+        self.keys = set([
+            'logchan',
+            'rolechan',
+            'logging',
+            'roleassign',
+            'joinannounce',
+            'leaveannounce',
+            ''])
 
     async def on_ready(self):
         print('Logged in:', self.user.name)
@@ -25,6 +33,11 @@ class Metis(discord.Client):
         for emoji in self.get_all_emojis():
             emoji_str = '<:{}:{}>'.format(emoji.name, emoji.id)
             self.emojis[emoji.name] = emoji_str
+
+    def is_mod(self, user, server):
+        '''Does the user `user` have at least one role that has moderator
+        status on the server `server`?'''
+        return user.id == BOT_OWNER_ID # TODO: make this use the mod role table
 
     async def on_message(self, message):
         if message.author.id == self.user.id: return
@@ -88,6 +101,14 @@ class Metis(discord.Client):
         await self.list_ignored_users(message)
 
         await self.refresh_emojis_request(message)
+
+        await self.add_self_assignable_role(message)
+        await self.remove_self_assignable_role(message)
+        await self.list_self_assignable_roles(message)
+        await self.set_role_channel(message)
+        await self.list_role_channel(message)
+        await self.set_log_channel(message)
+        await self.list_log_channel(message)
         # await self.ignore_channel(message)
 
         # These are all self-assignable roles only
@@ -99,7 +120,7 @@ class Metis(discord.Client):
     async def delete_messages_(self, message):
         '''Delete the last n number of messages. The final underscore in the name
         is because we want to avoid overwriting the delete_message() method in discord.Client'''
-        if message.author.id != BOT_OWNER_ID: return # TODO: mods also
+        if not self.is_mod(message.author, message.server): return
         if not message.content.startswith('-d'): return
         num_messages = message.content[2:]
         try:
@@ -133,6 +154,8 @@ class Metis(discord.Client):
         c.execute('CREATE TABLE role_alternate_names (canonical_name text, alternate_name text);')
         c.execute('CREATE TABLE role_ids (canonical_name text, id text);')
         c.execute('CREATE TABLE ignored_users (id text);')
+        c.execute('CREATE TABLE self_assignable_roles (id text);')
+        c.execute('CREATE TABLE server_config (key text, value text);')
 
         conn.commit()
         conn.close()
@@ -159,7 +182,7 @@ class Metis(discord.Client):
         role_id = split[1]
         role = discord.utils.find(lambda r: r.id == role_id, message.server.roles)
         if role is None:
-            report = ':question: Couldn\'t find role with ID: {}'.format(role_id)
+            report = '{} Couldn\'t find role with ID: {}'.format(self.emojis['blobwaitwhat'], role_id)
             await self.send_message(message.channel, report)
             return
 
@@ -169,7 +192,7 @@ class Metis(discord.Client):
         conn.commit()
         conn.close()
 
-        report = ':white_check_mark: Added moderator role: {} / {}'.format(role.name, role.id)
+        report = '{} This role now has moderator status: {} / {}'.format(self.emojis['blobgo'], role.name, role.id)
         await self.send_message(message.channel, report)
 
     async def remove_moderator_role(self, message):
@@ -192,7 +215,7 @@ class Metis(discord.Client):
         role_id = split[1]
         role = discord.utils.find(lambda r: r.id == role_id, message.server.roles)
         if role is None:
-            report = ':question: Couldn\'t find role with ID: {}'.format(role_id)
+            report = '{} Couldn\'t find role with ID: {}'.format(self.emojis['blobwaitwhat'], role_id)
             await self.send_message(message.channel, report)
             return
 
@@ -202,12 +225,12 @@ class Metis(discord.Client):
         conn.commit()
         conn.close()
 
-        report = ':white_check_mark: Deleted moderator role: {} / {}'.format(role.name, role.id)
+        report = '{} This role no longer has moderator status: {} / {}'.format(self.emojis['blobgo'], role.name, role.id)
         await self.send_message(message.channel, report)
 
     async def list_moderator_roles(self, message):
         '''Show all the moderator roles on the server'''
-        if message.author.id != BOT_OWNER_ID: return # TODO: this should be moderator check
+        if not self.is_mod(message.author, message.server): return
         if message.content != '-lmr': return
 
         if not util.check_db_exists(message):
@@ -317,8 +340,8 @@ class Metis(discord.Client):
 
     async def add_command(self, message):
         '''Create a new command-response pair'''
+        if not self.is_mod(message.author, message.server): return
         if message.content[0] != '-': return
-        if message.author.id != BOT_OWNER_ID: return # TODO: make this a moderator check
 
         prefix = 'add'
         content = message.content.strip()
@@ -385,7 +408,7 @@ class Metis(discord.Client):
 
     async def remove_command(self, message):
         '''Remove an existing command'''
-        if message.author.id != BOT_OWNER_ID: return
+        if not self.is_mod(message.author, message.server): return
         if message.content[0] != '-': return
 
         prefix = 'remove'
@@ -488,7 +511,7 @@ class Metis(discord.Client):
                 await self.send_message(message.channel, report)
             else:
                 c.execute('DELETE FROM ignored_users WHERE id=?', (target.id,))
-                report = ':white_check_mark: No longer ignoring user: **{}** / {}'.format(target.display_name, target.id)
+                report = '{} No longer ignoring user: **{}** / {}'.format(self.emojis['blobthumbsup'], target.display_name, target.id)
                 await self.send_message(message.channel, report)
 
         # Update local list
@@ -642,7 +665,7 @@ class Metis(discord.Client):
 
     async def display_avatar(self, message):
         '''Post the avatar of a user'''
-        if message.content != '.a' or message.content[:3] != '.a ': return
+        if message.content != '.a' and message.content[:3] != '.a ': return
         targets = [message.author]
         if len(message.mentions) > 0:
             targets = message.mentions
@@ -651,6 +674,301 @@ class Metis(discord.Client):
             if member.avatar_url != '':
                 report = '{}\'s avatar: {}'.format(member.name, member.avatar_url)
             await self.send_message(message.channel, report)
+
+    async def add_self_assignable_role(self, message):
+        '''Add a self-assignable role'''
+        if not self.is_mod(message.author, message.server): return
+        if message.content[0] != '-': return
+
+        prefix = 'asar'
+        if message.content[1:1+len(prefix)] != prefix: return
+
+        if not util.check_db_exists(message):
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            await self.send_message(message.channel, report)
+            return
+
+        split = message.content.strip().split()
+        if len(split) != 2: return
+
+        # ensure role exists
+        role_id = split[1]
+        role = discord.utils.find(lambda r: r.id == role_id, message.server.roles)
+        if role is None:
+            report = '{} Couldn\'t find role with ID: {}'.format(self.emojis['blobwaitwhat'], role_id)
+            await self.send_message(message.channel, report)
+            return
+
+        conn = sq.connect('db/{}.db'.format(message.server.id))
+        c = conn.cursor()
+        c.execute("INSERT INTO self_assignable_roles VALUES (?)", (role_id,))
+        conn.commit()
+        conn.close()
+
+        report = '{} This role is now self-assignable: {} / {}'.format(self.emojis['blobthumbsup'], role.name, role.id)
+        await self.send_message(message.channel, report)
+
+
+    async def remove_self_assignable_role(self, message):
+        '''Remove a role from being self-assignable'''
+        if not self.is_mod(message.author, message.server): return
+        if message.content[0] != '-': return
+
+        prefix = 'rsar'
+        if message.content[1:1+len(prefix)] != prefix: return
+
+        if not util.check_db_exists(message):
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            await self.send_message(message.channel, report)
+            return
+
+        split = message.content.strip().split()
+        if len(split) != 2: return
+
+        # ensure role exists
+        role_id = split[1]
+        role = discord.utils.find(lambda r: r.id == role_id, message.server.roles)
+        if role is None:
+            report = '{} Couldn\'t find role with ID: {}'.format(self.emojis['blobwaitwhat'], role_id)
+            await self.send_message(message.channel, report)
+            return
+
+        conn = sq.connect('db/{}.db'.format(message.server.id))
+        c = conn.cursor()
+        c.execute("DELETE FROM self_assignable_roles WHERE id=?", (role_id,))
+        conn.commit()
+        conn.close()
+
+        report = '{} This role is no longer self-assignable: {} / {}'.format(self.emojis['blobthumbsup'], role.name, role.id)
+        await self.send_message(message.channel, report)
+
+    async def list_self_assignable_roles(self, message):
+        '''List all self-assignable roles on the server'''
+        if not self.is_mod(message.author, message.server): return
+        if message.content != '-lsar': return
+
+        if not util.check_db_exists(message):
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            await self.send_message(message.channel, report)
+            return
+
+        conn = sq.connect('db/{}.db'.format(message.server.id))
+        c = conn.cursor()
+        role_id_list = [row[0] for row in c.execute("SELECT * FROM self_assignable_roles")]
+        conn.commit()
+        conn.close()
+
+        role_list = []
+        for role_id in role_id_list:
+            role = discord.utils.find(lambda r: r.id == role_id, message.server.roles)
+            role_list.append(role)
+
+        await self.show_roles_helper(role_list, message.channel)
+
+    async def set_role_channel(self, message):
+        '''Set the channel in which users can self-assign roles'''
+        if not self.is_mod(message.author, message.server): return
+        if message.content[0] != '-': return
+
+        prefix = 'src'
+        if message.content[1:1+len(prefix)] != prefix: return
+
+        if not util.check_db_exists(message):
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            await self.send_message(message.channel, report)
+            return
+
+        if len(message.channel_mentions) != 1:
+            report = 'Usage: `-src #channel`'
+            await self.send_message(message.channel, report)
+            return
+
+        channel = message.channel_mentions[0]
+
+        conn = sq.connect('db/{}.db'.format(message.server.id))
+        c = conn.cursor()
+
+        # check that the server doesn't already have a role channel
+        c.execute('SELECT value FROM server_config WHERE key=? LIMIT 1', ("Role Channel",))
+        result = c.fetchone()
+        if result is not None:
+            c.execute('UPDATE server_config SET value=? WHERE key=?', (channel.id, "Role Channel"))
+        else:
+            c.execute("INSERT INTO server_config VALUES (?, ?)", ("Role Channel", channel.id))
+
+        conn.commit()
+        conn.close()
+
+        report = '{0} The role channel has been set to: {1.mention} / {2}'.format(self.emojis['blobthumbsup'], channel, channel.id)
+        await self.send_message(message.channel, report)
+
+    async def list_role_channel(self, message):
+        '''List the role channel'''
+        if not self.is_mod(message.author, message.server): return
+        if message.content != '-lrc': return
+
+        if not util.check_db_exists(message):
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            await self.send_message(message.channel, report)
+            return
+
+        conn = sq.connect('db/{}.db'.format(message.server.id))
+        c = conn.cursor()
+        c.execute("SELECT value FROM server_config where key=?", ("Role Channel",))
+        result = c.fetchone()
+
+        if result is None:
+            report = '{} This server doesn\'t have a role channel'.format(self.emojis['angerycry'])
+            await self.send_message(message.channel, report)
+            return
+
+        conn.close()
+        result = result[0]
+
+        channel = discord.utils.find(lambda c: c.id == result, message.server.channels)
+        if channel is None:
+            report = '{} Possible config error: the listed role channel does not exist on this server'.format(self.emojis['blobwaitwhat'])
+            await self.send_message(message.channel, report)
+            return
+
+
+        report = '{0} The role channel is: {1.mention} / {2}'.format(self.emojis['blobgo'], channel, channel.id)
+        await self.send_message(message.channel, report)
+
+    async def set_log_channel(self, message):
+        '''Set the log channel'''
+        if not self.is_mod(message.author, message.server): return
+        if message.content[0] != '-': return
+
+        prefix = 'slc'
+        if message.content[1:1+len(prefix)] != prefix: return
+
+        if not util.check_db_exists(message):
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            await self.send_message(message.channel, report)
+            return
+
+        if len(message.channel_mentions) != 1:
+            report = 'Usage: `-slc #channel`'
+            await self.send_message(message.channel, report)
+            return
+
+        channel = message.channel_mentions[0]
+
+        conn = sq.connect('db/{}.db'.format(message.server.id))
+        c = conn.cursor()
+
+        # check that the server doesn't already have a log channel
+        c.execute('SELECT value FROM server_config WHERE key=? LIMIT 1', ("Log Channel",))
+        result = c.fetchone()
+        if result is not None:
+            c.execute('UPDATE server_config SET value=? WHERE key=?', (channel.id, "Log Channel"))
+        else:
+            c.execute("INSERT INTO server_config VALUES (?, ?)", ("Log Channel", channel.id))
+
+        conn.commit()
+        conn.close()
+
+        report = '{0} The log channel has been set to: {1.mention} / {2}'.format(self.emojis['blobthumbsup'], channel, channel.id)
+        await self.send_message(message.channel, report)
+
+    async def list_log_channel(self, message):
+        '''List the log channel'''
+        if not self.is_mod(message.author, message.server): return
+        if message.content != '-llc': return
+
+        if not util.check_db_exists(message):
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            await self.send_message(message.channel, report)
+            return
+
+        conn = sq.connect('db/{}.db'.format(message.server.id))
+        c = conn.cursor()
+        c.execute("SELECT value FROM server_config where key=?", ("Log Channel",))
+        result = c.fetchone()
+
+        if result is None:
+            report = '{} This server doesn\'t have a log channel'.format(self.emojis['angerycry'])
+            await self.send_message(message.channel, report)
+            return
+
+        conn.close()
+        result = result[0]
+
+        channel = discord.utils.find(lambda c: c.id == result, message.server.channels)
+        if channel is None:
+            report = '{} Possible config error: the listed log channel does not exist on this server'.format(self.emojis['blobwaitwhat'])
+            await self.send_message(message.channel, report)
+            return
+
+
+        report = '{0} The log channel is: {1.mention} / {2}'.format(self.emojis['blobgo'], channel, channel.id)
+        await self.send_message(message.channel, report)
+
+    async def set_key(self, message):
+        '''Set the channel in which users can self-assign roles'''
+        if not self.is_mod(message.author, message.server): return
+        if message.content[0] != '-': return
+
+        prefix = 'set'
+        if message.content[1:1+len(prefix)] != prefix: return
+
+        if not util.check_db_exists(message):
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            await self.send_message(message.channel, report)
+            return
+
+        split = message.content.split()
+        if len(split) < 3:
+            report = 'Usage: `-set key value`'
+            await self.send_message(message.channel, report)
+            return
+
+        key = split[1]
+        value_start_idx = 1 + len(prefix) + 1 + len(key) + 1
+        value = message.content[value_start_idx:]
+
+        conn = sq.connect('db/{}.db'.format(message.server.id))
+        c = conn.cursor()
+
+        # check that the server doesn't already have a role channel
+        c.execute('SELECT value FROM server_config WHERE key=? LIMIT 1', ("Role Channel",))
+        result = c.fetchone()
+        if result is not None:
+            c.execute('UPDATE server_config SET value=? WHERE key=?', (channel.id, "Role Channel"))
+        else:
+            c.execute("INSERT INTO server_config VALUES (?, ?)", ("Role Channel", channel.id))
+
+        conn.commit()
+        conn.close()
+
+        report = '{0} The role channel has been set to: {1.mention} / {2}'.format(self.emojis['blobthumbsup'], channel, channel.id)
+        await self.send_message(message.channel, report)
+
+    async def toggle_logging(self, message):
+        pass
+
+    async def set_join_leave_announcement_channel(self, message):
+        pass
+
+    async def toggle_join_announcement(self, message):
+        pass
+
+    async def toggle_leave_announcement(self, message):
+        pass
+
+    async def add_preban(self, message):
+        pass
+
+    async def remove_preban(self, message):
+        pass
+
+    async def search_preban(self, message):
+        pass
+
+    async def show_prebans(self, message):
+        pass
+
 
 metis = Metis()
 metis.run(os.environ['M_BOT_TOKEN'])
