@@ -8,27 +8,59 @@ import util
 
 BOT_OWNER_ID = '150919851710480384'
 
+
 class Metis(discord.Client):
     def __init__(self):
         super().__init__()
         self.ignored_users = set()
         self.emojis = {}
         self.db_conns = {}
+        self.servers_ = {}
         self.keys = set([
-            'logchan',
-            'rolechan',
+            'log-chan',
+            'role-chan',
             'logging',
-            'roleassign',
-            'joinannounce',
-            'leaveannounce',
-            ''])
+            'role-assign',
+            'join-announce',
+            'leave-announce',
+            'join-msg',
+            'leave-msg',
+        ])
 
     async def on_ready(self):
         print('Logged in:', self.user.name)
         self.refresh_emojis()
+        for server in self.servers_:
+            self.load_config(server)
+
+    def load_config(self, server):
+        db_name = 'db/{}.db'.format(server.id)
+        if server.id not in self.servers_:
+            self.servers_[server.id] = {}
+            self.servers_[server.id]['self-assignable-roles'] = set()
+            self.servers_[server.id]['moderator-roles'] = set()
+        conn = sq.connect(db_name)
+        curs = conn.cursor()
+        # Misc keys
+        for key in self.keys:
+            curs.execute('SELECT value FROM server_config WHERE key=?', (key))
+            res = curs.fetchone()
+            if res is not None:
+                val = res[0]
+                self.servers_[server.id][key] = val
+        # Self-assignable roles, moderator roles, prebans
+        table_names = ['self_assignable_roles', 'moderator_roles', 'prebans']
+        for table_name in table_names:
+            key_name = table_name.replace('_', '-')
+            for row in curs.execute('SELECT id FROM {}'.format(table_name)):
+                self.servers_[server.id][key_name].add(row[0])
+        # Role nickname to ID map
+        for row in curs.execute('SELECT * FROM role_ids'):
+            self.servers_[server.id]['role_ids'].add(row[0])
+        print('Loaded config for server {} / {}'.format(server.name, server.id))
 
     def refresh_emojis(self):
-        '''Initalize all emojis'''
+        '''Initialize all emojis'''
         self.emojis = {}
         for emoji in self.get_all_emojis():
             emoji_str = '<:{}:{}>'.format(emoji.name, emoji.id)
@@ -37,7 +69,7 @@ class Metis(discord.Client):
     def is_mod(self, user, server):
         '''Does the user `user` have at least one role that has moderator
         status on the server `server`?'''
-        return user.id == BOT_OWNER_ID # TODO: make this use the mod role table
+        return user.id == BOT_OWNER_ID or user.id in self.servers_[server.id]['moderator-roles']
 
     async def on_message(self, message):
         if message.author.id == self.user.id: return
@@ -89,6 +121,8 @@ class Metis(discord.Client):
 
         ## Bot owner only
 
+        await self.list_server_config(message)
+
         await self.add_moderator_role(message)
         await self.remove_moderator_role(message)
         await self.list_moderator_roles(message)
@@ -116,6 +150,11 @@ class Metis(discord.Client):
         # await self.remove_role_alternate_name(message)
         # await self.add_role(message)
         # await self.remove_role(message)
+
+    async def list_server_config(self, message):
+        if message.author.id != BOT_OWNER_ID: return
+        if message.content != '-config': return
+        await self.send_message(message.channel, str(self.servers_[server.id]))
 
     async def delete_messages_(self, message):
         '''Delete the last n number of messages. The final underscore in the name
@@ -148,11 +187,10 @@ class Metis(discord.Client):
         # type is 0 for users, 1 for channels
         c.execute('CREATE TABLE dont_copy_to_gallery (type integer, id text);')
         # type is 0 for users, 1 for channels
-        c.execute('CREATE TABLE prebans (id text, reason text, ban_date date);')
+        c.execute('CREATE TABLE prebans (id text);')
         c.execute('CREATE TABLE commands (command text, response text);')
         c.execute('CREATE TABLE multi_commands (command text, responses text);')
-        c.execute('CREATE TABLE role_alternate_names (canonical_name text, alternate_name text);')
-        c.execute('CREATE TABLE role_ids (canonical_name text, id text);')
+        c.execute('CREATE TABLE role_ids (nickname text, id text);') # map role nicknames to IDs
         c.execute('CREATE TABLE ignored_users (id text);')
         c.execute('CREATE TABLE self_assignable_roles (id text);')
         c.execute('CREATE TABLE server_config (key text, value text);')
@@ -168,10 +206,11 @@ class Metis(discord.Client):
         if message.content[0] != '-': return
 
         prefix = 'amr'
-        if message.content[1:1+len(prefix)] != prefix: return
+        if message.content[1:1 + len(prefix)] != prefix: return
 
         if not util.check_db_exists(message):
-            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(
+                self.emojis['angerycry'])
             await self.send_message(message.channel, report)
             return
 
@@ -201,10 +240,11 @@ class Metis(discord.Client):
         if message.content[0] != '-': return
 
         prefix = 'rmr'
-        if message.content[1:1+len(prefix)] != prefix: return
+        if message.content[1:1 + len(prefix)] != prefix: return
 
         if not util.check_db_exists(message):
-            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(
+                self.emojis['angerycry'])
             await self.send_message(message.channel, report)
             return
 
@@ -225,7 +265,8 @@ class Metis(discord.Client):
         conn.commit()
         conn.close()
 
-        report = '{} This role no longer has moderator status: {} / {}'.format(self.emojis['blobgo'], role.name, role.id)
+        report = '{} This role no longer has moderator status: {} / {}'.format(self.emojis['blobgo'], role.name,
+                                                                               role.id)
         await self.send_message(message.channel, report)
 
     async def list_moderator_roles(self, message):
@@ -234,7 +275,8 @@ class Metis(discord.Client):
         if message.content != '-lmr': return
 
         if not util.check_db_exists(message):
-            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(
+                self.emojis['angerycry'])
             await self.send_message(message.channel, report)
             return
 
@@ -289,6 +331,7 @@ class Metis(discord.Client):
 
     async def color_patch(self, message):
         '''Display a color patch'''
+
         async def show_usage(message):
             report = 'Usage: `.color <RGB hex code>` e.g.\n`.color #abc123`\n`.color 142 79 105`'
             await self.send_message(message.channel, report)
@@ -299,6 +342,7 @@ class Metis(discord.Client):
         def rgb_to_hex_code(r, g, b):
             def two_digit_hex(n):
                 return hex(int(n))[2:].rjust(2, '0')
+
             return ''.join(map(two_digit_hex, [r, g, b]))
 
         async def send_color_patch_pic(color):
@@ -318,15 +362,17 @@ class Metis(discord.Client):
         if message.content[0] != '.': return
 
         prefixes = ['color', 'colour']
-        if not any(message.content[1:1+len(prefix)] == prefix for prefix in prefixes):
+        if not any(message.content[1:1 + len(prefix)] == prefix for prefix in prefixes):
             return
 
         split = message.content.split()
 
         if len(split) == 2:
             color = split[1]
-            if color.startswith('#'): color = color[1:]
-            elif color.startswith('0x'): color = color[2:]
+            if color.startswith('#'):
+                color = color[1:]
+            elif color.startswith('0x'):
+                color = color[2:]
             color = hex_code_to_rgb(color)
             await send_color_patch_pic(color)
 
@@ -345,10 +391,11 @@ class Metis(discord.Client):
 
         prefix = 'add'
         content = message.content.strip()
-        if content[1:1+len(prefix)] != prefix: return
+        if content[1:1 + len(prefix)] != prefix: return
 
         if not util.check_db_exists(message):
-            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(
+                self.emojis['angerycry'])
             await self.send_message(message.channel, report)
             return
 
@@ -413,10 +460,11 @@ class Metis(discord.Client):
 
         prefix = 'remove'
         content = message.content.strip()
-        if content[1:1+len(prefix)] != prefix: return
+        if content[1:1 + len(prefix)] != prefix: return
 
         if not util.check_db_exists(message):
-            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(
+                self.emojis['angerycry'])
             await self.send_message(message.channel, report)
             return
 
@@ -452,10 +500,11 @@ class Metis(discord.Client):
         if message.content[0] != '-': return
 
         prefix = 'iu'
-        if message.content[1:1+len(prefix)] != prefix: return
+        if message.content[1:1 + len(prefix)] != prefix: return
 
         if not util.check_db_exists(message):
-            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(
+                self.emojis['angerycry'])
             await self.send_message(message.channel, report)
             return
 
@@ -471,10 +520,12 @@ class Metis(discord.Client):
             result = c.fetchone()
             if result is None:
                 c.execute('INSERT INTO ignored_users VALUES (?)', (target.id,))
-                report = '{} Now ignoring user: **{}** / {}'.format(self.emojis['angerycry'], target.display_name, target.id)
+                report = '{} Now ignoring user: **{}** / {}'.format(self.emojis['angerycry'], target.display_name,
+                                                                    target.id)
                 await self.send_message(message.channel, report)
             else:
-                report = '{} Already ignoring this user: **{}** / {}'.format(self.emojis['blobstop'], target.display_name, target.id)
+                report = '{} Already ignoring this user: **{}** / {}'.format(self.emojis['blobstop'],
+                                                                             target.display_name, target.id)
                 await self.send_message(message.channel, report)
 
         # Update local list
@@ -490,10 +541,11 @@ class Metis(discord.Client):
         if message.content[0] != '-': return
 
         prefix = 'uiu'
-        if message.content[1:1+len(prefix)] != prefix: return
+        if message.content[1:1 + len(prefix)] != prefix: return
 
         if not util.check_db_exists(message):
-            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(
+                self.emojis['angerycry'])
             await self.send_message(message.channel, report)
             return
 
@@ -507,11 +559,13 @@ class Metis(discord.Client):
             c.execute('SELECT * from ignored_users WHERE id=?', (target.id,))
             result = c.fetchone()
             if result is None:
-                report = '{} This user was not in the ignored list: **{}** / {}'.format(self.emojis['blobwaitwhat'], target.display_name, target.id)
+                report = '{} This user was not in the ignored list: **{}** / {}'.format(self.emojis['blobwaitwhat'],
+                                                                                        target.display_name, target.id)
                 await self.send_message(message.channel, report)
             else:
                 c.execute('DELETE FROM ignored_users WHERE id=?', (target.id,))
-                report = '{} No longer ignoring user: **{}** / {}'.format(self.emojis['blobthumbsup'], target.display_name, target.id)
+                report = '{} No longer ignoring user: **{}** / {}'.format(self.emojis['blobthumbsup'],
+                                                                          target.display_name, target.id)
                 await self.send_message(message.channel, report)
 
         # Update local list
@@ -528,7 +582,8 @@ class Metis(discord.Client):
         if message.content != '-liu': return
 
         if not util.check_db_exists(message):
-            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(
+                self.emojis['angerycry'])
             await self.send_message(message.channel, report)
             return
 
@@ -580,6 +635,7 @@ class Metis(discord.Client):
 
     async def choose(self, message):
         '''The Dice Man, but for Discord'''
+
         async def show_usage(message):
             report = 'Usage: `.choose <choice1> | <choice2> | <choice3> | ...`' + \
                      '\ne.g. `.choose go to sleep | post on discord`'
@@ -588,14 +644,14 @@ class Metis(discord.Client):
         if message.content[0] not in '.!': return
 
         prefix = 'choose'
-        if message.content[1:1+len(prefix)] != prefix: return
+        if message.content[1:1 + len(prefix)] != prefix: return
 
         split = message.content.split()
         if len(split) < 2:
             await show_usage(message)
             return
 
-        choices = message.content.strip()[2+len(prefix):].strip()
+        choices = message.content.strip()[2 + len(prefix):].strip()
         choices = choices.split('|')
         chosen = random.choice(choices)
         report = '{0.mention} I choose: **{1}**!'.format(message.author, chosen.strip())
@@ -616,11 +672,11 @@ class Metis(discord.Client):
         roles = ' / '.join(r.name for r in message.server.role_hierarchy)
 
         embed.set_thumbnail(url=message.server.icon_url) \
-             .add_field(name='Server created', value=util.ts(message.server.created_at)) \
-             .add_field(name='Members', value=message.server.member_count) \
-             .add_field(name='ID', value=message.server.id) \
-             .add_field(name='Owner', value=message.server.owner.name) \
-             .add_field(name='Roles', value=roles)
+            .add_field(name='Server created', value=util.ts(message.server.created_at)) \
+            .add_field(name='Members', value=message.server.member_count) \
+            .add_field(name='ID', value=message.server.id) \
+            .add_field(name='Owner', value=message.server.owner.name) \
+            .add_field(name='Roles', value=roles)
 
         await self.send_message(message.channel, content=None, tts=False, embed=embed)
 
@@ -654,12 +710,12 @@ class Metis(discord.Client):
             colour=member.top_role.colour)
 
         embed.set_thumbnail(url=member.avatar_url) \
-             .add_field(name='Account made', value=util.ts(account_created)) \
-             .add_field(name='Here since', value=util.ts(member.joined_at)) \
-             .add_field(name='ID', value=member.id) \
-             .add_field(name='Nickname', value=member.nick) \
-             .add_field(name='Status', value=str(member.status).title()) \
-             .add_field(name='Roles', value=role_names)
+            .add_field(name='Account made', value=util.ts(account_created)) \
+            .add_field(name='Here since', value=util.ts(member.joined_at)) \
+            .add_field(name='ID', value=member.id) \
+            .add_field(name='Nickname', value=member.nick) \
+            .add_field(name='Status', value=str(member.status).title()) \
+            .add_field(name='Roles', value=role_names)
 
         await self.send_message(channel, content=None, tts=False, embed=embed)
 
@@ -681,10 +737,11 @@ class Metis(discord.Client):
         if message.content[0] != '-': return
 
         prefix = 'asar'
-        if message.content[1:1+len(prefix)] != prefix: return
+        if message.content[1:1 + len(prefix)] != prefix: return
 
         if not util.check_db_exists(message):
-            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(
+                self.emojis['angerycry'])
             await self.send_message(message.channel, report)
             return
 
@@ -708,17 +765,17 @@ class Metis(discord.Client):
         report = '{} This role is now self-assignable: {} / {}'.format(self.emojis['blobthumbsup'], role.name, role.id)
         await self.send_message(message.channel, report)
 
-
     async def remove_self_assignable_role(self, message):
         '''Remove a role from being self-assignable'''
         if not self.is_mod(message.author, message.server): return
         if message.content[0] != '-': return
 
         prefix = 'rsar'
-        if message.content[1:1+len(prefix)] != prefix: return
+        if message.content[1:1 + len(prefix)] != prefix: return
 
         if not util.check_db_exists(message):
-            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(
+                self.emojis['angerycry'])
             await self.send_message(message.channel, report)
             return
 
@@ -739,7 +796,8 @@ class Metis(discord.Client):
         conn.commit()
         conn.close()
 
-        report = '{} This role is no longer self-assignable: {} / {}'.format(self.emojis['blobthumbsup'], role.name, role.id)
+        report = '{} This role is no longer self-assignable: {} / {}'.format(self.emojis['blobthumbsup'], role.name,
+                                                                             role.id)
         await self.send_message(message.channel, report)
 
     async def list_self_assignable_roles(self, message):
@@ -748,7 +806,8 @@ class Metis(discord.Client):
         if message.content != '-lsar': return
 
         if not util.check_db_exists(message):
-            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(
+                self.emojis['angerycry'])
             await self.send_message(message.channel, report)
             return
 
@@ -771,10 +830,11 @@ class Metis(discord.Client):
         if message.content[0] != '-': return
 
         prefix = 'src'
-        if message.content[1:1+len(prefix)] != prefix: return
+        if message.content[1:1 + len(prefix)] != prefix: return
 
         if not util.check_db_exists(message):
-            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(
+                self.emojis['angerycry'])
             await self.send_message(message.channel, report)
             return
 
@@ -799,7 +859,8 @@ class Metis(discord.Client):
         conn.commit()
         conn.close()
 
-        report = '{0} The role channel has been set to: {1.mention} / {2}'.format(self.emojis['blobthumbsup'], channel, channel.id)
+        report = '{0} The role channel has been set to: {1.mention} / {2}'.format(self.emojis['blobthumbsup'], channel,
+                                                                                  channel.id)
         await self.send_message(message.channel, report)
 
     async def list_role_channel(self, message):
@@ -808,7 +869,8 @@ class Metis(discord.Client):
         if message.content != '-lrc': return
 
         if not util.check_db_exists(message):
-            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(
+                self.emojis['angerycry'])
             await self.send_message(message.channel, report)
             return
 
@@ -827,10 +889,10 @@ class Metis(discord.Client):
 
         channel = discord.utils.find(lambda c: c.id == result, message.server.channels)
         if channel is None:
-            report = '{} Possible config error: the listed role channel does not exist on this server'.format(self.emojis['blobwaitwhat'])
+            report = '{} Possible config error: the listed role channel does not exist on this server'.format(
+                self.emojis['blobwaitwhat'])
             await self.send_message(message.channel, report)
             return
-
 
         report = '{0} The role channel is: {1.mention} / {2}'.format(self.emojis['blobgo'], channel, channel.id)
         await self.send_message(message.channel, report)
@@ -841,10 +903,11 @@ class Metis(discord.Client):
         if message.content[0] != '-': return
 
         prefix = 'slc'
-        if message.content[1:1+len(prefix)] != prefix: return
+        if message.content[1:1 + len(prefix)] != prefix: return
 
         if not util.check_db_exists(message):
-            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(
+                self.emojis['angerycry'])
             await self.send_message(message.channel, report)
             return
 
@@ -869,7 +932,8 @@ class Metis(discord.Client):
         conn.commit()
         conn.close()
 
-        report = '{0} The log channel has been set to: {1.mention} / {2}'.format(self.emojis['blobthumbsup'], channel, channel.id)
+        report = '{0} The log channel has been set to: {1.mention} / {2}'.format(self.emojis['blobthumbsup'], channel,
+                                                                                 channel.id)
         await self.send_message(message.channel, report)
 
     async def list_log_channel(self, message):
@@ -878,7 +942,8 @@ class Metis(discord.Client):
         if message.content != '-llc': return
 
         if not util.check_db_exists(message):
-            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(
+                self.emojis['angerycry'])
             await self.send_message(message.channel, report)
             return
 
@@ -897,10 +962,10 @@ class Metis(discord.Client):
 
         channel = discord.utils.find(lambda c: c.id == result, message.server.channels)
         if channel is None:
-            report = '{} Possible config error: the listed log channel does not exist on this server'.format(self.emojis['blobwaitwhat'])
+            report = '{} Possible config error: the listed log channel does not exist on this server'.format(
+                self.emojis['blobwaitwhat'])
             await self.send_message(message.channel, report)
             return
-
 
         report = '{0} The log channel is: {1.mention} / {2}'.format(self.emojis['blobgo'], channel, channel.id)
         await self.send_message(message.channel, report)
@@ -911,10 +976,11 @@ class Metis(discord.Client):
         if message.content[0] != '-': return
 
         prefix = 'set'
-        if message.content[1:1+len(prefix)] != prefix: return
+        if message.content[1:1 + len(prefix)] != prefix: return
 
         if not util.check_db_exists(message):
-            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(self.emojis['angerycry'])
+            report = '{} Server database does not exist. Please set it up first: `-ssdb`'.format(
+                self.emojis['angerycry'])
             await self.send_message(message.channel, report)
             return
 
@@ -942,7 +1008,8 @@ class Metis(discord.Client):
         conn.commit()
         conn.close()
 
-        report = '{0} The role channel has been set to: {1.mention} / {2}'.format(self.emojis['blobthumbsup'], channel, channel.id)
+        report = '{0} The role channel has been set to: {1.mention} / {2}'.format(self.emojis['blobthumbsup'], channel,
+                                                                                  channel.id)
         await self.send_message(message.channel, report)
 
     async def toggle_logging(self, message):
