@@ -30,12 +30,13 @@ class Metis(discord.Client):
     async def on_ready(self):
         print('Logged in:', self.user.name)
         self.refresh_emojis()
-        for server in self.servers_:
+        for server in self.servers:
             self.load_config(server)
 
     def load_config(self, server):
         db_name = 'db/{}.db'.format(server.id)
         if server.id not in self.servers_:
+            print('Creating map for server {} / {}'.format(server.name, server.id))
             self.servers_[server.id] = {}
             self.servers_[server.id]['self-assignable-roles'] = set()
             self.servers_[server.id]['moderator-roles'] = set()
@@ -43,7 +44,8 @@ class Metis(discord.Client):
         curs = conn.cursor()
         # Misc keys
         for key in self.keys:
-            curs.execute('SELECT value FROM server_config WHERE key=?', (key))
+            curs.execute('CREATE TABLE IF NOT EXISTS server_config (key text primary key, value text)')
+            curs.execute('SELECT value FROM server_config WHERE key=?', (key,))
             res = curs.fetchone()
             if res is not None:
                 val = res[0]
@@ -52,12 +54,15 @@ class Metis(discord.Client):
         table_names = ['self_assignable_roles', 'moderator_roles', 'prebans']
         for table_name in table_names:
             key_name = table_name.replace('_', '-')
+            curs.execute('CREATE TABLE IF NOT EXISTS {} (id text)'.format(table_name))
             for row in curs.execute('SELECT id FROM {}'.format(table_name)):
                 self.servers_[server.id][key_name].add(row[0])
         # Role nickname to ID map
+        curs.execute('CREATE TABLE IF NOT EXISTS role_ids (nickname text, id text)'.format(table_name))
         for row in curs.execute('SELECT * FROM role_ids'):
             self.servers_[server.id]['role_ids'].add(row[0])
         print('Loaded config for server {} / {}'.format(server.name, server.id))
+        conn.close()
 
     def refresh_emojis(self):
         '''Initialize all emojis'''
@@ -143,6 +148,8 @@ class Metis(discord.Client):
         await self.list_role_channel(message)
         await self.set_log_channel(message)
         await self.list_log_channel(message)
+        await self.set_key(message)
+        await self.show_key(message)
         # await self.ignore_channel(message)
 
         # These are all self-assignable roles only
@@ -971,7 +978,7 @@ class Metis(discord.Client):
         await self.send_message(message.channel, report)
 
     async def set_key(self, message):
-        '''Set the channel in which users can self-assign roles'''
+        '''Set a key-value pair. Key must be one of a fixed set. See: self.keys'''
         if not self.is_mod(message.author, message.server): return
         if message.content[0] != '-': return
 
@@ -991,29 +998,61 @@ class Metis(discord.Client):
             return
 
         key = split[1]
+        if key not in self.keys:
+            report = '{} Unrecognized key: {}'.format(self.emojis['blobstop'], key)
+            await self.send_message(message.channel, report)
+            return
+
         value_start_idx = 1 + len(prefix) + 1 + len(key) + 1
         value = message.content[value_start_idx:]
 
         conn = sq.connect('db/{}.db'.format(message.server.id))
         c = conn.cursor()
 
-        # check that the server doesn't already have a role channel
-        c.execute('SELECT value FROM server_config WHERE key=? LIMIT 1', ("Role Channel",))
+        # check that the server doesn't already have the key
+        c.execute('SELECT value FROM server_config WHERE key=? LIMIT 1', (key,))
         result = c.fetchone()
         if result is not None:
-            c.execute('UPDATE server_config SET value=? WHERE key=?', (channel.id, "Role Channel"))
+            c.execute('UPDATE server_config SET value=? WHERE key=?', (value, key))
         else:
-            c.execute("INSERT INTO server_config VALUES (?, ?)", ("Role Channel", channel.id))
+            c.execute("INSERT INTO server_config VALUES (?, ?)", (key, value))
+
+        self.servers_[message.server.id][key] = value
 
         conn.commit()
         conn.close()
 
-        report = '{0} The role channel has been set to: {1.mention} / {2}'.format(self.emojis['blobthumbsup'], channel,
-                                                                                  channel.id)
+        report = '{} {} => {}'.format(self.emojis['blobthumbsup'], key, value)
         await self.send_message(message.channel, report)
 
-    async def toggle_logging(self, message):
-        pass
+    async def show_key(self, message):
+        '''Set a key-value pair. Key must be one of a fixed set. See: self.keys'''
+        if not self.is_mod(message.author, message.server): return
+        if message.content[0] != '-': return
+
+        prefix = 'show'
+        if message.content[1:1 + len(prefix)] != prefix: return
+
+        split = message.content.split()
+        if len(split) != 2:
+            report = 'Usage: `-show key`'
+            await self.send_message(message.channel, report)
+            return
+
+        key = split[1]
+        if key not in self.keys:
+            report = '{} Unrecognized key: {}'.format(self.emojis['blobstop'], key)
+            await self.send_message(message.channel, report)
+            return
+
+        if key not in self.servers_[message.server.id]:
+            report = '{} No value assigned for this key: {}'.format(self.emojis['angerycry'], key)
+            await self.send_message(message.channel, report)
+            return
+
+        value = self.servers_[message.server.id][key]
+        report = '{} {} => {}'.format(self.emojis['blobgo'], key, value)
+        await self.send_message(message.channel, report)
 
     async def set_join_leave_announcement_channel(self, message):
         pass
